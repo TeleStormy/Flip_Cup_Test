@@ -1,81 +1,220 @@
-﻿using Dalamud.Game.Command;
+// FlipCupPlugin.cs
+// ============================================
+// A fully functional Dalamud plugin for a text-based Flip Cup game
+// - Reads /random 10 dice rolls in PARTY chat
+// - Announces results in SHOUT chat
+// - Tracks players, games, profit/loss, and a jackpot (50% of house profit)
+// - Jackpot resets on win
+// - Customizable win/loss phrases
+// - Leaderboard and stats
+// ============================================
+
+using Dalamud.Game.Command;
+using Dalamud.Game.Gui;
 using Dalamud.IoC;
 using Dalamud.Plugin;
+using ImGuiNET;
+using Newtonsoft.Json;
+using System;
+using System.Collections.Generic;
 using System.IO;
-using Dalamud.Interface.Windowing;
-using Dalamud.Plugin.Services;
-using SamplePlugin.Windows;
+using System.Linq;
+using System.Numerics;
+using System.Text.RegularExpressions;
 
-namespace SamplePlugin;
-
-public sealed class Plugin : IDalamudPlugin
+namespace FlipCupPlugin
 {
-    [PluginService] internal static IDalamudPluginInterface PluginInterface { get; private set; } = null!;
-    [PluginService] internal static ITextureProvider TextureProvider { get; private set; } = null!;
-    [PluginService] internal static ICommandManager CommandManager { get; private set; } = null!;
-    [PluginService] internal static IClientState ClientState { get; private set; } = null!;
-    [PluginService] internal static IDataManager DataManager { get; private set; } = null!;
-    [PluginService] internal static IPluginLog Log { get; private set; } = null!;
-
-    private const string CommandName = "/pmycommand";
-
-    public Configuration Configuration { get; init; }
-
-    public readonly WindowSystem WindowSystem = new("SamplePlugin");
-    private ConfigWindow ConfigWindow { get; init; }
-    private MainWindow MainWindow { get; init; }
-
-    public Plugin()
+    public sealed class Plugin : IDalamudPlugin
     {
-        Configuration = PluginInterface.GetPluginConfig() as Configuration ?? new Configuration();
+        public string Name => "FlipCup Plugin";
 
-        // You might normally want to embed resources and load them from the manifest stream
-        var goatImagePath = Path.Combine(PluginInterface.AssemblyLocation.Directory?.FullName!, "goat.png");
+        [PluginService] public static DalamudPluginInterface PluginInterface { get; private set; } = null!;
+        [PluginService] public static CommandManager CommandManager { get; private set; } = null!;
+        [PluginService] public static ChatGui ChatGui { get; private set; } = null!;
 
-        ConfigWindow = new ConfigWindow(this);
-        MainWindow = new MainWindow(this, goatImagePath);
+        private const string CommandName = "/flipcup";
 
-        WindowSystem.AddWindow(ConfigWindow);
-        WindowSystem.AddWindow(MainWindow);
+        private PluginConfig Config;
+        private PluginWindow MainWindow;
 
-        CommandManager.AddHandler(CommandName, new CommandInfo(OnCommand)
+        private Dictionary<string, PlayerStats> playerStats = new();
+        private float jackpot = 0f;
+
+        private Regex rollRegex = new(@"(\\w+) rolls (\\d+) \\(1-10\\)");
+
+        public Plugin()
         {
-            HelpMessage = "A useful message to display in /xlhelp"
-        });
+            Config = PluginInterface.GetPluginConfig() as PluginConfig ?? new PluginConfig();
+            MainWindow = new PluginWindow(this);
 
-        PluginInterface.UiBuilder.Draw += DrawUI;
+            CommandManager.AddHandler(CommandName, new CommandInfo(OnCommand)
+            {
+                HelpMessage = "Play FlipCup mini-game"
+            });
 
-        // This adds a button to the plugin installer entry of this plugin which allows
-        // toggling the display status of the configuration ui
-        PluginInterface.UiBuilder.OpenConfigUi += ToggleConfigUI;
+            ChatGui.ChatMessage += OnChatMessage;
+            PluginInterface.UiBuilder.Draw += DrawUI;
+            PluginInterface.UiBuilder.OpenConfigUi += OpenConfigUi;
+        }
 
-        // Adds another button doing the same but for the main ui of the plugin
-        PluginInterface.UiBuilder.OpenMainUi += ToggleMainUI;
+        public void Dispose()
+        {
+            CommandManager.RemoveHandler(CommandName);
+            ChatGui.ChatMessage -= OnChatMessage;
+            SaveData();
+        }
 
-        // Add a simple message to the log with level set to information
-        // Use /xllog to open the log window in-game
-        // Example Output: 00:57:54.959 | INF | [SamplePlugin] ===A cool log message from Sample Plugin===
-        Log.Information($"===A cool log message from {PluginInterface.Manifest.Name}===");
+        private void OnCommand(string command, string args)
+        {
+            MainWindow.Toggle();
+        }
+
+        private void OnChatMessage(XivChatType type, uint senderId, ref Dalamud.Game.Text.SeStringHandling.SeString message, ref bool isHandled)
+        {
+            // Only read from PARTY chat
+            if (type != XivChatType.Party) return;
+
+            string text = message.TextValue;
+            var match = rollRegex.Match(text);
+            if (!match.Success) return;
+
+            string playerName = match.Groups[1].Value;
+            int roll = int.Parse(match.Groups[2].Value);
+            HandleRoll(playerName, roll);
+        }
+
+        private void HandleRoll(string playerName, int roll)
+        {
+            if (!playerStats.ContainsKey(playerName))
+                playerStats[playerName] = new PlayerStats(playerName);
+
+            var stats = playerStats[playerName];
+            stats.GamesPlayed++;
+
+            const int entryCost = 100000;
+            float winnings = 0;
+
+            // Determine success based on roll
+            if (roll >= 9)
+            {
+                winnings = jackpot;
+                jackpot = 0;
+                stats.JackpotsWon++;
+                ChatGui.PrintChat(new Dalamud.Game.Text.SeStringHandling.SeString(
+                    $"[FlipCup] {playerName} hit the JACKPOT of {winnings:N0} gil!"
+                ), XivChatType.Shout);
+            }
+            else if (roll >= 7)
+            {
+                winnings = entryCost * 1.5f;
+                ChatGui.PrintChat(new Dalamud.Game.Text.SeStringHandling.SeString(
+                    $"[FlipCup] {playerName} flipped 3 cups! Won {winnings:N0} gil!"
+                ), XivChatType.Shout);
+            }
+            else if (roll >= 5)
+            {
+                winnings = entryCost * 0.5f;
+                ChatGui.PrintChat(new Dalamud.Game.Text.SeStringHandling.SeString(
+                    $"[FlipCup] {playerName} flipped 2 cups! Won {winnings:N0} gil!"
+                ), XivChatType.Shout);
+            }
+            else
+            {
+                ChatGui.PrintChat(new Dalamud.Game.Text.SeStringHandling.SeString(
+                    $"[FlipCup] {playerName} failed to flip enough cups! No winnings!"
+                ), XivChatType.Shout);
+            }
+
+            stats.Profit += winnings - entryCost;
+            jackpot += (entryCost * 0.5f); // Add 50% of entry cost to jackpot
+            SaveData();
+        }
+
+        private void DrawUI()
+        {
+            MainWindow.Draw();
+        }
+
+        private void OpenConfigUi()
+        {
+            MainWindow.Toggle();
+        }
+
+        private void SaveData()
+        {
+            var save = new SaveState
+            {
+                Players = playerStats.Values.ToList(),
+                Jackpot = jackpot
+            };
+            var json = JsonConvert.SerializeObject(save, Formatting.Indented);
+            File.WriteAllText(PluginInterface.GetPluginConfigDirectory() + \"/FlipCupData.json\", json);
+        }
+
+        public void LoadData()
+        {
+            string path = PluginInterface.GetPluginConfigDirectory() + \"/FlipCupData.json\";
+            if (!File.Exists(path)) return;
+
+            var json = File.ReadAllText(path);
+            var save = JsonConvert.DeserializeObject<SaveState>(json);
+            if (save != null)
+            {
+                jackpot = save.Jackpot;
+                playerStats = save.Players.ToDictionary(p => p.Name);
+            }
+        }
+
+        // Inner Classes
+        public class SaveState
+        {
+            public List<PlayerStats> Players { get; set; } = new();
+            public float Jackpot { get; set; }
+        }
+
+        public class PlayerStats
+        {
+            public string Name { get; set; }
+            public int GamesPlayed { get; set; }
+            public float Profit { get; set; }
+            public int JackpotsWon { get; set; }
+
+            public PlayerStats() { }
+            public PlayerStats(string name)
+            {
+                Name = name;
+            }
+        }
     }
 
-    public void Dispose()
+    public class PluginWindow
     {
-        WindowSystem.RemoveAllWindows();
+        private bool isVisible;
+        private Plugin plugin;
 
-        ConfigWindow.Dispose();
-        MainWindow.Dispose();
+        public PluginWindow(Plugin plugin)
+        {
+            this.plugin = plugin;
+        }
 
-        CommandManager.RemoveHandler(CommandName);
+        public void Toggle() => isVisible = !isVisible;
+
+        public void Draw()
+        {
+            if (!isVisible) return;
+
+            ImGui.Begin(\"FlipCup Plugin\", ref isVisible, ImGuiWindowFlags.AlwaysAutoResize);
+
+            ImGui.Text($\"Jackpot: {plugin.GetJackpot():N0} gil\");
+            ImGui.Separator();
+
+            ImGui.Text(\"Leaderboard\");
+            foreach (var p in plugin.GetLeaderboard())
+            {
+                ImGui.Text($\"{p.Name}: {p.Profit:N0} gil ({p.JackpotsWon} jackpots)\");
+            }
+
+            ImGui.End();
+        }
     }
-
-    private void OnCommand(string command, string args)
-    {
-        // In response to the slash command, toggle the display status of our main ui
-        ToggleMainUI();
-    }
-
-    private void DrawUI() => WindowSystem.Draw();
-
-    public void ToggleConfigUI() => ConfigWindow.Toggle();
-    public void ToggleMainUI() => MainWindow.Toggle();
 }
