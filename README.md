@@ -27,3 +27,30 @@ FlipCup is a text-based mini-game plugin for FFXIV using Dalamud. Players flip c
 - Open the configuration UI via the Plugin Manager or `/flipcup config`.
 - Customize phrases for game start, cup success/failure, and wins.
 - View current jackpot and player statistics in real-time.
+
+-----Example Game-----
+🎮 Flip Cup: Dice Challenge
+
+Setup:
+
+Each play costs 100,000 gil.
+
+You must flip 4 cups in order.
+
+Each cup is harder than the last (higher roll required to succeed).
+
+A 10-sided die (d10) determines success.
+
+🎲 Cup Difficulty:
+Cup #	Required Roll to Flip (on d10)
+1	        3+
+2	        5+
+3	        7+
+4	        9+
+💰 Payout Structure:
+Cups Flipped	Payout
+0 Cups	        0 gil
+1 Cup	        0 gil
+2 Cups	        150,000 gil (1.5x)
+3 Cups	        300,000 gil (3x)
+4 Cups	        1,000,000 gil (Jackpot!)
