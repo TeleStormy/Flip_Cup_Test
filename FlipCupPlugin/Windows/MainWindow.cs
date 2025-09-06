@@ -1,101 +1,65 @@
-﻿using System;
-using System.Numerics;
-using Dalamud.Bindings.ImGui;
-using Dalamud.Interface.Utility;
-using Dalamud.Interface.Utility.Raii;
-using Dalamud.Interface.Windowing;
-using Lumina.Excel.Sheets;
+using System.Linq;
+using ImGuiNET;
 
-namespace SamplePlugin.Windows;
+namespace FlipCup;
 
-public class MainWindow : Window, IDisposable
+public sealed class MainWindow
 {
-    private string GoatImagePath;
-    private Plugin Plugin;
+    private readonly Plugin plugin;
+    internal bool IsOpen = false;
 
-    // We give this window a hidden ID using ##.
-    // The user will see "My Amazing Window" as window title,
-    // but for ImGui the ID is "My Amazing Window##With a hidden ID"
-    public MainWindow(Plugin plugin, string goatImagePath)
-        : base("My Amazing Window##With a hidden ID", ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse)
+    public MainWindow(Plugin plugin) => this.plugin = plugin;
+
+    public void Draw()
     {
-        SizeConstraints = new WindowSizeConstraints
+        if (!IsOpen) return;
+
+        if (ImGui.Begin("FlipCup", ref IsOpen, ImGuiWindowFlags.AlwaysAutoResize))
         {
-            MinimumSize = new Vector2(375, 330),
-            MaximumSize = new Vector2(float.MaxValue, float.MaxValue)
-        };
+            var c = plugin.Config;
 
-        GoatImagePath = goatImagePath;
-        Plugin = plugin;
-    }
-
-    public void Dispose() { }
-
-    public override void Draw()
-    {
-        ImGui.TextUnformatted($"The random config bool is {Plugin.Configuration.SomePropertyToBeSavedAndWithADefault}");
-
-        if (ImGui.Button("Show Settings"))
-        {
-            Plugin.ToggleConfigUI();
-        }
-
-        ImGui.Spacing();
-
-        // Normally a BeginChild() would have to be followed by an unconditional EndChild(),
-        // ImRaii takes care of this after the scope ends.
-        // This works for all ImGui functions that require specific handling, examples are BeginTable() or Indent().
-        using (var child = ImRaii.Child("SomeChildWithAScrollbar", Vector2.Zero, true))
-        {
-            // Check if this child is drawing
-            if (child.Success)
+            if (ImGui.BeginTabBar("tabs"))
             {
-                ImGui.TextUnformatted("Have a goat:");
-                var goatImage = Plugin.TextureProvider.GetFromFile(GoatImagePath).GetWrapOrDefault();
-                if (goatImage != null)
+                if (ImGui.BeginTabItem("Stats"))
                 {
-                    using (ImRaii.PushIndent(55f))
-                    {
-                        ImGui.Image(goatImage.Handle, goatImage.Size);
-                    }
-                }
-                else
-                {
-                    ImGui.TextUnformatted("Image not found.");
-                }
+                    ImGui.Text($"House Profit: {Configuration.FormatGil(c.HouseProfit)}");
+                    ImGui.Text($"Jackpot: {Configuration.FormatGil(c.Jackpot)}");
+                    ImGui.Separator();
 
-                ImGuiHelpers.ScaledDummy(20.0f);
+                    ImGui.Text("Top Players (Net Winnings):");
+                    foreach (var p in c.Players.Values.OrderByDescending(p => p.NetWinnings).Take(10))
+                        ImGui.BulletText($"{p.Name} — {p.NetWinnings:N0} gil | Games: {p.GamesPlayed} | Cups: {p.TotalCupsCleared}");
 
-                // Example for other services that Dalamud provides.
-                // ClientState provides a wrapper filled with information about the local player object and client.
+                    if (ImGui.Button("Reset Stats/Jackpot"))
+                        c.ResetStats();
 
-                var localPlayer = Plugin.ClientState.LocalPlayer;
-                if (localPlayer == null)
-                {
-                    ImGui.TextUnformatted("Our local player is currently not loaded.");
-                    return;
+                    ImGui.EndTabItem();
                 }
 
-                if (!localPlayer.ClassJob.IsValid)
+                if (ImGui.BeginTabItem("Config"))
                 {
-                    ImGui.TextUnformatted("Our current job is currently not valid.");
-                    return;
+                    // Simple live-edit of phrases + entry
+                    var entry = c.EntryCostGil; 
+                    if (ImGui.InputInt("Entry Cost", ref entry))
+                        c.EntryCostGil = entry < 0 ? 0 : entry;
+
+                    ImGui.InputText("Start Phrase", ref c.StartPhrase, 512);
+                    ImGui.InputText("Jackpot Phrase", ref c.JackpotPhrase, 256);
+                    ImGui.InputText("Cup Prompt", ref c.CupPromptPhrase, 256);
+                    ImGui.InputText("Cup Success", ref c.CupSuccessPhrase, 256);
+                    ImGui.InputText("Cup Fail", ref c.CupFailPhrase, 256);
+                    ImGui.InputText("Win Phrase", ref c.WinPhrase, 256);
+                    ImGui.InputText("Jackpot Win", ref c.JackpotWinPhrase, 256);
+
+                    if (ImGui.Button("Save Configuration"))
+                        c.Save();
+
+                    ImGui.EndTabItem();
                 }
 
-                // If you want to see the Macro representation of this SeString use `ToMacroString()`
-                ImGui.TextUnformatted($"Our current job is ({localPlayer.ClassJob.RowId}) \"{localPlayer.ClassJob.Value.Abbreviation}\"");
-
-                // Example for quarrying Lumina directly, getting the name of our current area.
-                var territoryId = Plugin.ClientState.TerritoryType;
-                if (Plugin.DataManager.GetExcelSheet<TerritoryType>().TryGetRow(territoryId, out var territoryRow))
-                {
-                    ImGui.TextUnformatted($"We are currently in ({territoryId}) \"{territoryRow.PlaceName.Value.Name}\"");
-                }
-                else
-                {
-                    ImGui.TextUnformatted("Invalid territory.");
-                }
+                ImGui.EndTabBar();
             }
         }
+        ImGui.End();
     }
 }
